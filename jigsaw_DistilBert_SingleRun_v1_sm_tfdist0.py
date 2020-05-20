@@ -1,6 +1,6 @@
 # Resources:
 # https://huggingface.co/transformers/model_doc/roberta.html#tfrobertamodel
-# https://horovod.readthedocs.io/en/latest/keras.html
+# https://www.tensorflow.org/tutorials/distribute/keras
 # https://www.kaggle.com/xhlulu/jigsaw-tpu-xlm-roberta
 
 ###################################################################
@@ -111,28 +111,28 @@ def get_train_data(data_dir):
     return train, test, sub
 
 if __name__ == "__main__":
-	
+    
     ###################################################################
     # SETTINGS
     ###################################################################
-	# Detect hardware, return appropriate distribution strategy
-	try:
-		# TPU detection. No parameters necessary if TPU_NAME environment variable is
-		# set: this is always the case on Kaggle.
-		tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
-		print('Running on TPU ', tpu.master())
-	except ValueError:
-		tpu = None
-
-	if tpu:
-		tf.config.experimental_connect_to_cluster(tpu)
-		tf.tpu.experimental.initialize_tpu_system(tpu)
-		strategy = tf.distribute.experimental.TPUStrategy(tpu)
-	else:
-		# Default distribution strategy in Tensorflow. Works on CPU and single GPU.
-		strategy = tf.distribute.MirroredStrategy()
-
-	print("REPLICAS: ", strategy.num_replicas_in_sync)
+    # Detect hardware, return appropriate distribution strategy
+    try:
+        # TPU detection. No parameters necessary if TPU_NAME environment variable is
+        # set: this is always the case on Kaggle.
+        tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
+        print('Running on TPU ', tpu.master())
+    except ValueError:
+        tpu = None
+    
+    if tpu:
+        tf.config.experimental_connect_to_cluster(tpu)
+        tf.tpu.experimental.initialize_tpu_system(tpu)
+        strategy = tf.distribute.experimental.TPUStrategy(tpu)
+    else:
+        # Default distribution strategy in Tensorflow. Works on CPU and single GPU.
+        strategy = tf.distribute.MirroredStrategy()
+        
+    print("REPLICAS: ", strategy.num_replicas_in_sync)
     
     ###################################################################
     # CONSTANTS
@@ -146,7 +146,9 @@ if __name__ == "__main__":
     MODEL = 'distilbert-base-multilingual-cased'
     myOutput = '/opt/ml/model/'
     expCounter = 1
-	AUTO = tf.data.experimental.AUTOTUNE
+    AUTO = tf.data.experimental.AUTOTUNE
+    BATCH_SIZE = 16 * strategy.num_replicas_in_sync
+    EPOCHS = 2
     
     ###################################################################
     # TOKENIZER
@@ -171,60 +173,61 @@ if __name__ == "__main__":
     y_train = train.toxic.values
     
     x_train, x_valid, y_train, y_valid = train_test_split(x_train, y_train, test_size=0.33, random_state=1331)
-	
-	train_dataset = (
-		tf.data.Dataset
-		.from_tensor_slices((x_train, y_train))
-		.repeat()
-		.shuffle(2048)
-		.batch(BATCH_SIZE)
-		.prefetch(AUTO)
-	)
-
-	valid_dataset = (
-		tf.data.Dataset
-		.from_tensor_slices((x_valid, y_valid))
-		.batch(BATCH_SIZE)
-		.cache()
-		.prefetch(AUTO)
-	)
-
-	test_dataset = (
-		tf.data.Dataset
-		.from_tensor_slices(x_test)
-		.batch(BATCH_SIZE)
-)
+    
+    train_dataset = (
+        tf.data.Dataset
+        .from_tensor_slices((x_train, y_train))
+        .repeat()
+        .shuffle(2048)
+        .batch(BATCH_SIZE)
+        .prefetch(AUTO)
+    )
+    
+    valid_dataset = (
+        tf.data.Dataset
+        .from_tensor_slices((x_valid, y_valid))
+        .batch(BATCH_SIZE)
+        .cache()
+        .prefetch(AUTO)
+    )
+    
+    test_dataset = (
+        tf.data.Dataset
+        .from_tensor_slices(x_test)
+        .batch(BATCH_SIZE)
+    )
 
     ###################################################################
     # LOAD MODEL
     ###################################################################
-	print("loading model ...")
+    print("loading model ...")
     
-	with strategy.scope():
-		transformer_layer = TFAutoModel.from_pretrained(MODEL)
-		model = build_model(transformer_layer, max_len=MAX_LEN)
-	model.summary()
-	
+    with strategy.scope():
+        #transformer_layer = TFAutoModel.from_pretrained(MODEL)
+        transformer_layer = TFDistilBertModel.from_pretrained(MODEL)
+        model = build_model(transformer_layer, max_len=MAX_LEN)
+    model.summary()
+    
     ###################################################################
     # TRAINING
     ###################################################################
-	print("run training ...")
-	
-	n_steps = x_train.shape[0] // BATCH_SIZE
-	train_history = model.fit(
-		train_dataset,
-		steps_per_epoch=n_steps,
-		validation_data=valid_dataset,
-		epochs=EPOCHS
-	)
-	
-	
+    print("run training ...")
+    
+    n_steps = x_train.shape[0] // BATCH_SIZE
+    
+    train_history = model.fit(
+        train_dataset,
+        steps_per_epoch=n_steps,
+        validation_data=valid_dataset,
+        epochs=EPOCHS
+    )
+    
     ###################################################################
     # SCORE
     ###################################################################
-	print("score test data ...")
-	sub['toxic'] = model.predict(test_dataset, verbose=1)
-	sub.to_csv('submission.csv', index=False)
+    print("score test data ...")
+    sub['toxic'] = model.predict(test_dataset, verbose=1)
+    sub.to_csv('submission.csv', index=False)
     
     ###################################################################
     # COMPLETE
